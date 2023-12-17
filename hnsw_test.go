@@ -101,7 +101,7 @@ func BenchmarkHNSWGraph_Insert(b *testing.B) {
 }
 
 func BenchmarkHNSWGraph_Search(b *testing.B) {
-	dims := []int{2}
+	dims := []int{128}
 	//dims := []int{1, 2, 4, 8, 16, 32, 64, 128, 256, 512}
 	// ns := []int{1, 10, 100, 1_000, 10_000, 100_000, 1_000_000}
 	ns := []int{100_000}

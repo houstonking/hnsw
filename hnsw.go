@@ -255,7 +255,7 @@ func SearchLayer[S ~[]F, F constraints.Float](
 				if err != nil {
 					return nil, err
 				}
-				if hnsw.Dist(neighborVector, query) < hnsw.Dist(furthestFound.Vector, query) || nearestNeighbors.Len() < ef {
+				if nearestNeighbors.Len() < ef || hnsw.Dist(neighborVector, query) < hnsw.Dist(furthestFound.Vector, query) {
 					heap.Push(nearestNeighbors, &NodeAndVector[S, F]{Node: neighborNode, Vector: neighborVector})
 					heap.Push(candidates, &NodeAndVector[S, F]{Node: neighborNode, Vector: neighborVector})
 					if nearestNeighbors.Len() > ef {

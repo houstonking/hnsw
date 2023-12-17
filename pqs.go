@@ -2,6 +2,7 @@ package hnsw
 
 import (
 	"container/heap"
+
 	"golang.org/x/exp/constraints"
 )
 
@@ -88,4 +89,20 @@ func MaxDistQueue[S ~[]F, F constraints.Float](dist DistanceFunc[S, F], nodes []
 		})
 	}
 	return dpq
+}
+
+type DistanceMinMaxHeap[S ~[]F, F constraints.Float] struct {
+	heap   *minMaxHeap[NodeAndVector[S, F]]
+	origin S
+	dist   DistanceFunc[S, F]
+}
+
+func NewDistanceMinMaxHeap[S ~[]F, F constraints.Float](dist DistanceFunc[S, F], origin S) *DistanceMinMaxHeap[S, F] {
+	return &DistanceMinMaxHeap[S, F]{
+		heap: NewMinMaxHeap[NodeAndVector[S, F]](func(nav1, nav2 NodeAndVector[S, F]) bool {
+			return Less[F](dist(nav1.Vector, origin), dist(nav2.Vector, origin))
+		}, []NodeAndVector[S, F]{}),
+		origin: origin,
+		dist:   dist,
+	}
 }
