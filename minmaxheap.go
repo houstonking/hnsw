@@ -10,65 +10,106 @@ package hnsw
 // This implementation is based off of the repository:
 // https://github.com/dogmatiq/kyu/blob/main/README.md
 type minMaxHeap[T any] struct {
-	len  uint
-	Data []T
-	Less func(T, T) bool
+	Data      []T
+	lessFn    compare[T]
+	greaterFn compare[T]
 }
 
 type compare[T any] func([]T, int, int) bool
 
 func NewMinMaxHeap[T any](less func(T, T) bool, data []T) *minMaxHeap[T] {
 	n := len(data)
-	q := &minMaxHeap[T]{Less: less, Data: data, len: uint(n)}
+	q := &minMaxHeap[T]{
+		lessFn: func(data []T, i int, j int) bool {
+			return less(data[i], data[j])
+		},
+		greaterFn: func(data []T, i int, j int) bool {
+			return less(data[j], data[i])
+		},
+		Data: data,
+	}
+	if n == 0 {
+		return q
+	}
 	for i := n/2 - 1; i >= 0; i-- {
 		q.down(i, n)
 	}
 	return q
 }
 
-func (heap *minMaxHeap[T]) Len() uint {
-	return heap.len
+func NewMinMaxHeap2[T any](less func(T, T) bool, data []T) *minMaxHeap[T] {
+	n := len(data)
+	q := &minMaxHeap[T]{
+		lessFn: func(data []T, i int, j int) bool {
+			return less(data[i], data[j])
+		},
+		greaterFn: func(data []T, i int, j int) bool {
+			return less(data[j], data[i])
+		},
+		Data: data,
+	}
+	for i := n/2 - 1; i >= 0; i-- {
+		q.down(i, n)
+	}
+	return q
+}
+
+func (heap *minMaxHeap[T]) Len() int {
+	return len(heap.Data)
 }
 
 func (heap *minMaxHeap[T]) Push(x T) {
 	i := int(heap.Len())
 	heap.Data = append(heap.Data, x)
 	heap.up(i, i+1)
-	heap.len++
 }
 
 func (heap *minMaxHeap[T]) PopMin() T {
-	i := int(heap.Len() - 1)
+	n := int(heap.Len() - 1)
 
-	heap.swap(0, i)
-	heap.down(0, i)
-	heap.len--
-	item := heap.Data[i]
+	heap.swap(0, n)
+	heap.down(0, n)
+	item := heap.Data[n]
+	heap.Data = heap.Data[:n]
 
 	return item
 }
 
 func (heap *minMaxHeap[T]) PopMax() T {
 	n := int(heap.Len())
-	i := heap.indexOfMax(n)
+	i := heap.indexOfMax()
 	j := n - 1
-
-	item := heap.Data[i]
 
 	heap.swap(i, j)
 	heap.down(i, j)
-	heap.len--
+
+	// i := 0
+	// l := 1
+	// if l < n && heap.lessFn(heap.Data, l, i) {
+	// 	i = l
+	// }
+	// r := 2
+	// if r < n && heap.lessFn(heap.Data, r, i) {
+	// 	i = r
+	// }
+
+	// heap.swap(i, n-1)
+	// heap.down(i, n-1)
+
+	item := heap.Data[j]
+	heap.Data = heap.Data[:j]
 
 	return item
 }
 
 // indexOfMax returns index of the maximum element in h.
-func (heap *minMaxHeap[T]) indexOfMax(n int) int {
+func (heap *minMaxHeap[T]) indexOfMax() int {
+	n := int(heap.Len())
 	if n <= 2 {
 		return n - 1
 	}
 
-	if heap.LessFn()(heap.Data, 2, 1) {
+	if heap.lessFn(heap.Data, 2, 1) {
 		return 1
 	}
 
@@ -80,23 +121,11 @@ func (heap *minMaxHeap[T]) PeekMin() T {
 }
 
 func (heap *minMaxHeap[T]) PeekMax() T {
-	return heap.Data[heap.indexOfMax(int(heap.Len()))]
+	return heap.Data[heap.indexOfMax()]
 }
 
 func (heap *minMaxHeap[T]) swap(i int, j int) {
 	heap.Data[i], heap.Data[j] = heap.Data[j], heap.Data[i]
-}
-
-func (heap *minMaxHeap[T]) LessFn() compare[T] {
-	return func(data []T, i int, j int) bool {
-		return heap.Less(data[i], data[j])
-	}
-}
-
-func (heap *minMaxHeap[T]) GreaterFn() compare[T] {
-	return func(data []T, i int, j int) bool {
-		return heap.Less(data[j], data[i])
-	}
 }
 
 // up moves the element at i upwards within the heap until it occupies an
@@ -105,25 +134,33 @@ func (heap *minMaxHeap[T]) up(i, n int) {
 	parent := (i - 1) / 2
 
 	if isMinLevelIndex(uint(i)) {
-		if i > 0 && heap.swapIf(heap.GreaterFn(), i, parent) {
-			heap.upX(heap.GreaterFn(), parent, n)
+		if i > 0 && heap.swapIfGreater(i, parent) {
+			heap.upX(heap.greaterFn, parent, n)
 		} else {
-			heap.upX(heap.LessFn(), i, n)
+			heap.upX(heap.lessFn, i, n)
 		}
 	} else {
-		if i > 0 && heap.swapIf(heap.LessFn(), i, parent) {
-			heap.upX(heap.LessFn(), parent, n)
+		if i > 0 && heap.swapIfLess(i, parent) {
+			heap.upX(heap.lessFn, parent, n)
 		} else {
-			heap.upX(heap.GreaterFn(), i, n)
+			heap.upX(heap.greaterFn, i, n)
 		}
 	}
 }
 
-func (heap *minMaxHeap[T]) upX(less compare[T], i, n int) {
+func (heap *minMaxHeap[T]) swapIf(cmp compare[T], i int, j int) bool {
+	if cmp(heap.Data, i, j) {
+		heap.swap(i, j)
+		return true
+	}
+	return false
+}
+
+func (heap *minMaxHeap[T]) upX(cmp compare[T], i, n int) {
 	for i > 2 {
 		grandparent := (((i - 1) / 2) - 1) / 2
 
-		if !heap.swapIf(less, i, grandparent) {
+		if !heap.swapIf(cmp, i, grandparent) {
 			return
 		}
 
@@ -133,16 +170,16 @@ func (heap *minMaxHeap[T]) upX(less compare[T], i, n int) {
 
 func (heap *minMaxHeap[T]) down(i int, n int) bool {
 	if isMinLevelIndex(uint(i)) {
-		return heap.downX(heap.LessFn(), i, n)
+		return heap.downMin(i, n)
 	}
-	return heap.downX(heap.GreaterFn(), i, n)
+	return heap.downMax(i, n)
 }
 
-func (heap *minMaxHeap[T]) downX(cmp compare[T], i int, n int) bool {
+func (heap *minMaxHeap[T]) downMin(i int, n int) bool {
 	recursed := false
 
 	for {
-		m := heap.minDescendent(cmp, i, n)
+		m := heap.minDescendent(heap.lessFn, i, n)
 		if m == -1 {
 			// i has no children.
 			return recursed
@@ -152,16 +189,46 @@ func (heap *minMaxHeap[T]) downX(cmp compare[T], i int, n int) bool {
 
 		if i == parent {
 			// m is a direct child of i.
-			heap.swapIf(cmp, m, i)
+			heap.swapIfLess(m, i)
 			return recursed
 		}
 
 		// m is a grandchild of i.
-		if !heap.swapIf(cmp, m, i) {
+		if !heap.swapIfLess(m, i) {
 			return recursed
 		}
 
-		heap.swapIf(cmp, parent, m)
+		heap.swapIfLess(parent, m)
+
+		i = m
+		recursed = true
+	}
+}
+
+func (heap *minMaxHeap[T]) downMax(i int, n int) bool {
+	recursed := false
+
+	for {
+		m := heap.minDescendent(heap.greaterFn, i, n)
+		if m == -1 {
+			// i has no children.
+			return recursed
+		}
+
+		parent := (m - 1) / 2
+
+		if i == parent {
+			// m is a direct child of i.
+			heap.swapIfGreater(m, i)
+			return recursed
+		}
+
+		// m is a grandchild of i.
+		if !heap.swapIfGreater(m, i) {
+			return recursed
+		}
+
+		heap.swapIfGreater(parent, m)
 
 		i = m
 		recursed = true
@@ -207,11 +274,60 @@ func (heap *minMaxHeap[T]) minDescendent(cmp compare[T], i int, n int) int {
 	min, _ = heap.least(cmp, min, right*2+2, n)
 
 	return min
+
 }
 
-// least returns the index of the smaller element of those elements at i and j.
-//
-// If j overruns the heap, done is true.
+// firstChild := 2*i + 1
+// if firstChild >= n {
+// 	return i
+// }
+// secondChild := firstChild + 1
+// if secondChild >= n {
+// 	return firstChild
+// }
+
+// firstGrandchild := 2*firstChild + 1
+// if firstGrandchild >= n {
+// 	if cmp(heap.Data, secondChild, firstChild) {
+// 		return secondChild
+// 	}
+// 	return firstChild
+// }
+
+// secondGrandchild := firstGrandchild + 1
+// if secondGrandchild >= n {
+// 	if cmp(heap.Data, firstGrandchild, secondChild) {
+// 		return firstGrandchild
+// 	}
+// 	return secondChild
+// }
+
+// minGrandchild := firstGrandchild
+// if cmp(heap.Data, secondGrandchild, firstGrandchild) {
+// 	minGrandchild = secondGrandchild
+// }
+
+// thirdGrandchild := secondGrandchild + 1
+// if thirdGrandchild >= n {
+// 	if cmp(heap.Data, minGrandchild, secondChild) {
+// 		return minGrandchild
+// 	}
+// 	return secondChild
+// }
+
+// if cmp(heap.Data, thirdGrandchild, minGrandchild) {
+// 	return thirdGrandchild
+// }
+// return minGrandchild
+
+// func (heap *minMaxHeap[T]) swapIf(cmp compare[T], i int, j int) bool {
+// 	if cmp(heap.Data, i, j) {
+// 		heap.swap(i, j)
+// 		return true
+// 	}
+// 	return false
+// }
+
 func (heap *minMaxHeap[T]) least(cmp compare[T], i, j, n int) (_ int, done bool) {
 	if j >= n {
 		return i, true
@@ -224,8 +340,16 @@ func (heap *minMaxHeap[T]) least(cmp compare[T], i, j, n int) (_ int, done bool)
 	return j, false
 }
 
-func (heap *minMaxHeap[T]) swapIf(cmp compare[T], i int, j int) bool {
-	if cmp(heap.Data, i, j) {
+func (heap *minMaxHeap[T]) swapIfLess(i int, j int) bool {
+	if heap.lessFn(heap.Data, i, j) {
+		heap.swap(i, j)
+		return true
+	}
+	return false
+}
+
+func (heap *minMaxHeap[T]) swapIfGreater(i int, j int) bool {
+	if heap.greaterFn(heap.Data, i, j) {
 		heap.swap(i, j)
 		return true
 	}
@@ -234,8 +358,8 @@ func (heap *minMaxHeap[T]) swapIf(cmp compare[T], i int, j int) bool {
 
 // isMinMaxHeap returns true if the heap is a min-max heap, false otherwise.
 func (heap *minMaxHeap[T]) isMinMaxHeap() bool {
-	length := heap.len
-	testIndex := func(index uint, compareIndex func(uint) bool) bool {
+	length := heap.Len()
+	testIndex := func(index int, compareIndex func(int) bool) bool {
 		firstChild := firstChildIndex(index)
 		secondChild := firstChild + 1
 		firstGrandchild := firstChildIndex(firstChild)
@@ -246,11 +370,11 @@ func (heap *minMaxHeap[T]) isMinMaxHeap() bool {
 			compareIndex(firstGrandchild) && compareIndex(secondGrandchild) &&
 			compareIndex(thirdGrandchild) && compareIndex(fourthGrandchild)
 	}
-	for i := uint(0); i < length; i++ {
-		if isMinLevelIndex(i) {
+	for i := 0; i < length; i++ {
+		if isMinLevelIndex(uint(i)) {
 			// fmt.Println("value: ", heap.Data[i], "index: ", i, "is min")
-			compareOne := func(child uint) bool {
-				ret := child >= length || !heap.Less(heap.Data[child], heap.Data[i])
+			compareOne := func(child int) bool {
+				ret := child >= length || !heap.lessFn(heap.Data, child, i)
 				// fmt.Println("child: ", child, "value: ", heap.Data[child], "index: ", child, "is less than: ", heap.Data[i], "index: ", i, "result: ", ret)
 				return ret
 			}
@@ -259,9 +383,9 @@ func (heap *minMaxHeap[T]) isMinMaxHeap() bool {
 			}
 		} else {
 			// fmt.Println("value: ", heap.Data[i], "index: ", i, "is max")
-			compareOne := func(child uint) bool {
+			compareOne := func(child int) bool {
 
-				ret := child >= length || !heap.Less(heap.Data[i], heap.Data[child])
+				ret := child >= length || !heap.lessFn(heap.Data, i, child)
 				// fmt.Println("child: ", child, "value: ", heap.Data[child], "index: ", child, "is less than: ", heap.Data[i], "index: ", i, "result: ", ret)
 
 				return ret

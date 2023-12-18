@@ -1,10 +1,7 @@
 package hnsw
 
 import (
-	"container/heap"
 	"math/rand"
-	"slices"
-	"sort"
 
 	"github.com/bits-and-blooms/bitset"
 	"github.com/chewxy/math32"
@@ -87,7 +84,16 @@ func (f *HNSWGraph[S, F]) UpdateNeighbor(neighborID NodeID, newNode *HNSWNode, n
 		return nil, err
 	}
 
-	nearest := MinDistQueue(f.Dist, []*HNSWNode{newNode}, []S{newNodeVector}, neighborVector)
+	// nearest := MinDistQueue(f.Dist, []*HNSWNode{newNode}, []S{newNodeVector}, neighborVector)
+	nearest := NewMinMaxHeap(func(a, b *NodeAndVector[S, F]) bool {
+		return f.Dist(a.Vector, neighborVector) < f.Dist(b.Vector, neighborVector)
+	}, []*NodeAndVector[S, F]{
+		{
+			Node:   newNode,
+			Vector: newNodeVector,
+		},
+	})
+
 	currentNeighborNodes, err := f.NodeStore.BatchGet(neighborNode.GetNeighbors(layer))
 	if err != nil {
 		return nil, err
@@ -98,14 +104,14 @@ func (f *HNSWGraph[S, F]) UpdateNeighbor(neighborID NodeID, newNode *HNSWNode, n
 	}
 
 	for i := range currentNeighborNodes {
-		heap.Push(nearest, &NodeAndVector[S, F]{Node: currentNeighborNodes[i], Vector: currentNeighborVectors[i]})
+		nearest.Push(&NodeAndVector[S, F]{Node: currentNeighborNodes[i], Vector: currentNeighborVectors[i]})
 	}
 
 	SelectNeighborsSimple(nearest, f.M, layer)
 
 	updatedNeighbors := make([]NodeID, 0)
 
-	for _, nn := range nearest.PriorityQueue {
+	for _, nn := range nearest.Data {
 		updatedNeighbors = append(updatedNeighbors, nn.Node.ID)
 	}
 
@@ -214,6 +220,17 @@ func (b *BitsetVistedSet) Add(id NodeID) {
 	b.Set(uint(id))
 }
 
+func Zip[S ~[]F, F constraints.Float](nodes []*HNSWNode, vectors []S) []*NodeAndVector[S, F] {
+	nv := make([]*NodeAndVector[S, F], len(nodes))
+	for i, node := range nodes {
+		nv[i] = &NodeAndVector[S, F]{
+			Node:   node,
+			Vector: vectors[i],
+		}
+	}
+	return nv
+}
+
 // SearchLayer searches layer `layerNumber` of the HNSWGraph for the `ef` nearest neighbors of `query` starting from
 // the provided set of `entryPoints`. Returns the indexes of the nearest neighbors.
 func SearchLayer[S ~[]F, F constraints.Float](
@@ -222,7 +239,9 @@ func SearchLayer[S ~[]F, F constraints.Float](
 	entryPoints []NodeID,
 	ef int,
 	layerNumber int,
-) (*DistancePriorityQueue[S, F], error) {
+) (*minMaxHeap[*NodeAndVector[S, F]], error) {
+	// fmt.Println("SearchLayer", entryPoints, layerNumber)
+
 	visted := NewBitsetVistedSet(entryPoints)
 	vectors, err := hnsw.VectorStore.BatchGet(entryPoints)
 	if err != nil {
@@ -232,21 +251,30 @@ func SearchLayer[S ~[]F, F constraints.Float](
 	if err != nil {
 		return nil, err
 	}
+	data := Zip[S, F](nodes, vectors)
+	// candidates := MinDistQueue(hnsw.Dist, nodes, vectors, query)
+	candidates := NewMinMaxHeap(func(a, b *NodeAndVector[S, F]) bool {
+		return hnsw.Dist(a.Vector, query) < hnsw.Dist(b.Vector, query)
+	}, data)
+	// nearestNeighbors := MaxDistQueue(hnsw.Dist, nodes, vectors, query)
+	nearestNeighbors := NewMinMaxHeap(func(a, b *NodeAndVector[S, F]) bool {
+		return hnsw.Dist(a.Vector, query) < hnsw.Dist(b.Vector, query)
+	}, data)
 
-	candidates := MinDistQueue(hnsw.Dist, nodes, vectors, query)
-	nearestNeighbors := MaxDistQueue(hnsw.Dist, nodes, vectors, query)
-	heap.Fix(nearestNeighbors, 0)
 	for candidates.Len() > 0 {
-		nearestCandidate := heap.Pop(candidates).(*NodeAndVector[S, F])
-		furthestFound := nearestNeighbors.Peek()
-		if nearestCandidate.distance > furthestFound.distance {
+		nearestCandidate := candidates.PopMin()
+		furthestFound := nearestNeighbors.PeekMax()
+		// fmt.Println("nearestCandidate", nearestCandidate.Node.ID, "furthestFound", furthestFound.Node.ID)
+
+		if hnsw.Dist(nearestCandidate.Vector, query) > hnsw.Dist(furthestFound.Vector, query) {
 			return nearestNeighbors, nil
 		}
 
 		for _, neighborID := range nearestCandidate.Node.GetNeighbors(layerNumber) {
 			if !visted.Contains(neighborID) {
 				visted.Add(neighborID)
-				furthestFound = nearestNeighbors.Peek()
+				furthestFound = nearestNeighbors.PeekMax()
+				// fmt.Println("set furthestFound", furthestFound.Node.ID)
 				neighborVector, err := hnsw.VectorStore.Get(neighborID)
 				if err != nil {
 					return nil, err
@@ -256,20 +284,27 @@ func SearchLayer[S ~[]F, F constraints.Float](
 					return nil, err
 				}
 				if nearestNeighbors.Len() < ef || hnsw.Dist(neighborVector, query) < hnsw.Dist(furthestFound.Vector, query) {
-					heap.Push(nearestNeighbors, &NodeAndVector[S, F]{Node: neighborNode, Vector: neighborVector})
-					heap.Push(candidates, &NodeAndVector[S, F]{Node: neighborNode, Vector: neighborVector})
+					nv := NodeAndVector[S, F]{Node: neighborNode, Vector: neighborVector}
+					nearestNeighbors.Push(&nv)
+					candidates.Push(&nv)
 					if nearestNeighbors.Len() > ef {
-						heap.Pop(nearestNeighbors)
+						// fmt.Println("throwing away from ef", nearestNeighbors.PeekMax().Node.ID)
+						nearestNeighbors.PopMax() // todo: maybe pop min?
 					}
 				}
 			}
 		}
 	}
+	nearestIDs := make([]NodeID, 0)
+	for _, nodeAndVector := range nearestNeighbors.Data {
+		nearestIDs = append(nearestIDs, nodeAndVector.Node.ID)
+	}
+	// fmt.Println("returning nearestNeighbors", nearestIDs)
 	return nearestNeighbors, nil
 }
 
 func Insert[S ~[]F, F constraints.Float](hnsw *HNSWGraph[S, F], vector S) error {
-	//fmt.Println()
+	// fmt.Println("Insert", vector)
 
 	insertLevel := selectLevel(hnsw.LevelProbabilities, hnsw.Rng)
 	newNode := hnsw.EmptyNode()
@@ -293,35 +328,49 @@ func Insert[S ~[]F, F constraints.Float](hnsw *HNSWGraph[S, F], vector S) error 
 	topLayer := epNode.Layer
 
 	// Search from top layer to insert level
-	var nearestNeighbors *DistancePriorityQueue[S, F]
+	// var nearestNeighbors *DistancePriorityQueue[S, F]
+
+	var nearestNeighbors *minMaxHeap[*NodeAndVector[S, F]]
 	for layer := topLayer; layer > insertLevel; layer-- {
 		nearestNeighbors, err = SearchLayer(hnsw, vector, []NodeID{ep}, 1, layer)
 		if err != nil {
 			return err
 		}
-		ep = nearestNeighbors.Peek().Node.ID
+		ep = nearestNeighbors.PeekMin().Node.ID
 	}
 
 	// Insert node at insert level and find all new neighbors
 	eps := []NodeID{ep}
 	for layer := min(insertLevel, topLayer); layer >= 0; layer-- {
-		nearestNeighbors, err = SearchLayer(hnsw, vector, eps, hnsw.EfConstruction, layer)
+		nearestNeighbors, err := SearchLayer(hnsw, vector, eps, hnsw.EfConstruction, layer)
 		if err != nil {
 			return err
 		}
 
 		// TODO: replace nearest with a double-ended priority queue.
-		nearest := slices.Clone(nearestNeighbors.PriorityQueue)
-		sort.Slice(nearest, func(i, j int) bool {
-			return hnsw.Dist(nearest[i].Vector, vector) < hnsw.Dist(nearest[j].Vector, vector)
-		})
+		// nearest := slices.Clone(nearestNeighbors.PriorityQueue)
+		// sort.Slice(nearest, func(i, j int) bool {
+		// 	return hnsw.Dist(nearest[i].Vector, vector) < hnsw.Dist(nearest[j].Vector, vector)
+		// })
 
-		newEps := make([]NodeID, 0)
-		for _, neighbor := range nearest[:min(nearest.Len(), hnsw.M)] {
-			newNode.NeighborsByLevel[layer] = append(newNode.NeighborsByLevel[layer], neighbor.Node.ID)
-			newEps = append(newEps, neighbor.Node.ID)
+		for nearestNeighbors.Len() > hnsw.M {
+			// fmt.Println("throwing away ", nearestNeighbors.PeekMax().Node.ID)
+			nearestNeighbors.PopMax()
 		}
-		eps = newEps
+
+		// newEps := make([]NodeID, 0)
+		for i := nearestNeighbors.Len(); i > 0; i-- {
+			neighbor := nearestNeighbors.PopMin()
+			// fmt.Println("adding ", neighbor.Node.ID)
+			newNode.NeighborsByLevel[layer] = append(newNode.NeighborsByLevel[layer], neighbor.Node.ID)
+			// newEps = append(newEps, neighbor.Node.ID)
+		}
+		// newEps := make([]NodeID, 0)
+		// for _, neighbor := range nearest[:min(nearest.Len(), hnsw.M)] {
+		// 	newNode.NeighborsByLevel[layer] = append(newNode.NeighborsByLevel[layer], neighbor.Node.ID)
+		// 	newEps = append(newEps, neighbor.Node.ID)
+		// }
+		// eps = newEps
 	}
 
 	// Update neighbors of neighbors
@@ -354,20 +403,23 @@ func Insert[S ~[]F, F constraints.Float](hnsw *HNSWGraph[S, F], vector S) error 
 	return nil
 }
 
-func SelectNeighborsSimple[S ~[]F, F constraints.Float](neighbors *DistancePriorityQueue[S, F], m int, layer int) {
+func SelectNeighborsSimple[S ~[]F, F constraints.Float](neighbors *minMaxHeap[*NodeAndVector[S, F]], m int, layer int) {
 	mLayer := m
 	if layer == 0 {
 		mLayer += m
 	}
 	for neighbors.Len() > mLayer {
-		heap.Pop(neighbors)
+		neighbors.PopMax()
 	}
 }
 
 // Search searches the HNSWGraph for the `K` nearest neighbors of `query`. Returns the indexes of the nearest neighbors.
-func Search[S ~[]F, F constraints.Float](hnsw *HNSWGraph[S, F], query S, K int, ef int) (*DistancePriorityQueue[S, F], error) {
+func Search[S ~[]F, F constraints.Float](hnsw *HNSWGraph[S, F], query S, K int, ef int) (*minMaxHeap[*NodeAndVector[S, F]], error) {
 	ep := hnsw.EntryPoint()
-	nearestFound := MinDistQueue(hnsw.Dist, []*HNSWNode{}, []S{}, query)
+	// nearestFound := MinDistQueue(hnsw.Dist, []*HNSWNode{}, []S{}, query)
+	nearestFound := NewMinMaxHeap(func(a, b *NodeAndVector[S, F]) bool {
+		return hnsw.Dist(a.Vector, query) < hnsw.Dist(b.Vector, query)
+	}, []*NodeAndVector[S, F]{})
 	epNode, err := hnsw.NodeStore.Get(ep)
 	if err != nil {
 		return nil, err
@@ -379,17 +431,21 @@ func Search[S ~[]F, F constraints.Float](hnsw *HNSWGraph[S, F], query S, K int, 
 		if err != nil {
 			return nil, err
 		}
-		ep = nearestFound.Peek().Node.ID
+		ep = nearestFound.PeekMin().Node.ID
 	}
 	for nearestFound.Len() > K {
-		heap.Pop(nearestFound)
+		nearestFound.PopMax()
 	}
 	return nearestFound, nil
 }
 
 // BruteForceSearch searches the HNSWGraph for the `K` nearest neighbors of `query`. Returns the indexes of the nearest neighbors.
 func BruteForceSearch[S ~[]F, F constraints.Float](hnsw *HNSWGraph[S, F], query S, K int) ([]*NodeAndVector[S, F], error) {
-	nearestFound := MinDistQueue(hnsw.Dist, []*HNSWNode{}, []S{}, query)
+	// nearestFound := MinDistQueue(hnsw.Dist, []*HNSWNode{}, []S{}, query)
+	nearestFound := NewMinMaxHeap(func(a, b *NodeAndVector[S, F]) bool {
+		return hnsw.Dist(a.Vector, query) < hnsw.Dist(b.Vector, query)
+	}, []*NodeAndVector[S, F]{})
+
 	n := hnsw.NodeStore.NextID()
 	for i := NodeID(0); i < n; i++ {
 		node, err := hnsw.NodeStore.Get(i)
@@ -400,13 +456,13 @@ func BruteForceSearch[S ~[]F, F constraints.Float](hnsw *HNSWGraph[S, F], query 
 		if err != nil {
 			return nil, err
 		}
-		heap.Push(nearestFound, &NodeAndVector[S, F]{Node: node, Vector: vector})
+		nearestFound.Push(&NodeAndVector[S, F]{Node: node, Vector: vector})
 	}
 	found := make([]*NodeAndVector[S, F], 0)
 	foundLen := nearestFound.Len()
 	for i := 0; i < min(K, foundLen); i++ {
-		popped := heap.Pop(nearestFound)
-		found = append(found, popped.(*NodeAndVector[S, F]))
+		popped := nearestFound.PopMin()
+		found = append(found, popped)
 	}
 	return found, nil
 }

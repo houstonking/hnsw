@@ -1,7 +1,6 @@
 package hnsw
 
 import (
-	"container/heap"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -80,10 +79,11 @@ func TestHNSWGraph(t *testing.T) {
 //}
 
 func BenchmarkHNSWGraph_Insert(b *testing.B) {
-	dims := []int{1536}
+	dims := []int{8}
 	//dims := []int{1, 2, 4, 8, 16, 32, 64, 128, 256, 512}
 	//ns := []int{1, 10, 100, 1_000, 10_000, 100_000}
-	ns := []int{1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000}
+	// ns := []int{1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000}
+	ns := []int{1_000, 2_000, 4_000, 8_000}
 	for _, dim := range dims {
 		for _, n := range ns {
 			b.Run(fmt.Sprintf("dim=%d, n=%d", dim, n), func(b *testing.B) {
@@ -101,11 +101,13 @@ func BenchmarkHNSWGraph_Insert(b *testing.B) {
 }
 
 func BenchmarkHNSWGraph_Search(b *testing.B) {
-	dims := []int{128}
+	dims := []int{1536}
 	//dims := []int{1, 2, 4, 8, 16, 32, 64, 128, 256, 512}
 	// ns := []int{1, 10, 100, 1_000, 10_000, 100_000, 1_000_000}
-	ns := []int{100_000}
-	// ns := []int{1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000}
+	// ns := []int{1000}
+	ns := []int{1_000, 2_000, 3_000, 4_000, 5_000, 6_000, 7_000, 8_000, 9_000, 10_000}
+	// ns := []int{1_000, 2_000, 4_000, 8_000}
+
 	// efSearches := []int{10, 20, 30, 40, 50, 60, 70, 80, 90, 100}
 	efSearches := []int{64}
 	for _, dim := range dims {
@@ -145,8 +147,9 @@ func TestDeterministicHNSWGraph_Search(t *testing.T) {
 		assert.NoError(t, err)
 		println("\nvec", int(vec[0]))
 		for res.Len() > 0 {
-			nodeAndVector := heap.Pop(res).(*NodeAndVector[[]float32, float32])
-			t.Logf("dist: %d, id: %d", int(nodeAndVector.distance), nodeAndVector.Node.ID)
+			nodeAndVector := res.PopMin()
+			dist := hnsw.Dist(nodeAndVector.Vector, vec)
+			t.Logf("dist: %d, id: %d", int(dist), nodeAndVector.Node.ID)
 		}
 	}
 }
@@ -175,15 +178,16 @@ func TestDeterministicHNSWGraph_Search2D(t *testing.T) {
 		assert.NoError(t, err)
 		t.Logf("\nvec: %.2f, %.2f", vec[0], vec[1])
 		for res.Len() > 0 {
-			nodeAndVector := heap.Pop(res).(*NodeAndVector[[]float32, float32])
-			t.Logf("dist: %.2f, vec: %.2f, %.2f", nodeAndVector.distance, nodeAndVector.Vector[0], nodeAndVector.Vector[1])
+			nodeAndVector := res.PopMin()
+			dist := hnsw.Dist(nodeAndVector.Vector, vec)
+			t.Logf("dist: %.2f, vec: %.2f, %.2f", dist, nodeAndVector.Vector[0], nodeAndVector.Vector[1])
 		}
 	}
 }
 
 func RunSearch(hnsw *HNSWGraph[[]float32, float32], k int, ef int, b *testing.B) {
 	var err error
-	var searchRes *DistancePriorityQueue[[]float32, float32]
+	var searchRes *minMaxHeap[*NodeAndVector[[]float32, float32]]
 	var lastVec []float32
 	b.Run(fmt.Sprintf("Search dim= %d, n= %d, k=%d, ef=%d", hnsw.D, hnsw.NodeStore.NextID(), k, ef), func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
@@ -215,7 +219,7 @@ func RunSearch(hnsw *HNSWGraph[[]float32, float32], k int, ef int, b *testing.B)
 	data := make([]*NodeAndVector[[]float32, float32], searchRes.Len())
 	searchLen := searchRes.Len()
 	for i := 0; i < min(k, searchLen); i++ {
-		nodeAndVector := heap.Pop(searchRes).(*NodeAndVector[[]float32, float32])
+		nodeAndVector := searchRes.PopMin()
 		data[i] = nodeAndVector
 	}
 	// sort by distance
@@ -223,20 +227,24 @@ func RunSearch(hnsw *HNSWGraph[[]float32, float32], k int, ef int, b *testing.B)
 		return hnsw.Dist(data[i].Vector, lastVec) < hnsw.Dist(data[j].Vector, lastVec)
 	})
 	for _, nodeAndVector := range data {
+		dist := hnsw.Dist(nodeAndVector.Vector, lastVec)
+
 		if hnsw.D < 10 {
-			b.Logf("dist: %.4f, id: %d, vec: %+v", nodeAndVector.distance, nodeAndVector.Node.ID, nodeAndVector.Vector)
+			b.Logf("dist: %.4f, id: %d, vec: %+v", dist, nodeAndVector.Node.ID, nodeAndVector.Vector)
 		} else {
-			b.Logf("dist: %.4f, id: %d", nodeAndVector.distance, nodeAndVector.Node.ID)
+			b.Logf("dist: %.4f, id: %d", dist, nodeAndVector.Node.ID)
 		}
 	}
 	b.Logf("Brute force search results")
 	bfRes, err := BruteForceSearch(hnsw, lastVec, k)
 	assert.NoError(b, err)
 	for _, nodeAndVector := range bfRes {
+		dist := hnsw.Dist(nodeAndVector.Vector, lastVec)
+
 		if hnsw.D < 10 {
-			b.Logf("dist: %.4f, id: %d, vec: %+v", nodeAndVector.distance, nodeAndVector.Node.ID, nodeAndVector.Vector)
+			b.Logf("dist: %.4f, id: %d, vec: %+v", dist, nodeAndVector.Node.ID, nodeAndVector.Vector)
 		} else {
-			b.Logf("dist: %.4f, id: %d", nodeAndVector.distance, nodeAndVector.Node.ID)
+			b.Logf("dist: %.4f, id: %d", dist, nodeAndVector.Node.ID)
 		}
 	}
 }

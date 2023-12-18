@@ -28,7 +28,7 @@ func parentIndex(i uint) uint {
 	return (i - 1) / 2
 }
 
-func firstChildIndex(i uint) uint {
+func firstChildIndex(i int) int {
 	return i*2 + 1
 }
 
